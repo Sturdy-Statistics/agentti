@@ -1,5 +1,7 @@
 # agentti
 
+[![Clojars Project](https://img.shields.io/clojars/v/com.sturdystats/agentti.svg)](https://clojars.org/com.sturdystats/agentti)
+
 **Minimal background workers for Clojure services.**
 
 **Noun:** ([Finnish](https://translate.google.com/?sl=fi&tl=en&text=agentti&op=translate)):
@@ -15,6 +17,13 @@ Many Clojure and JVM services need *a small number of background tasks* but do n
 While `agentti` is built on top of [`chime`](https://github.com/jarohen/chime) for time-based scheduling, it adds explicit execution semantics—dedicated executors, timeouts, lifecycle management, and introspection.
 Such features are often reimplemented ad hoc in production services.
 
+## Installation
+
+Add to `deps.edn`:
+
+```clojure
+{:deps {com.sturdystats/agentti {:mvn/version "VERSION"}}}
+```
 
 ## What this library is for
 
