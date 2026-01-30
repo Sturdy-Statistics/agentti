@@ -100,7 +100,7 @@
   "Build and deploy to Clojars."
   [_]
   (when-not (git-exact-tag)
-    (throw (ex-info "Refusing to deploy: not on an exact git tag")))
+    (throw (ex-info "Refusing to deploy: not on an exact git tag" {})))
   (let [{:keys [jar-file]} (jar nil)]
     (dd/deploy
      {:installer      :remote
