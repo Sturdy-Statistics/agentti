@@ -52,16 +52,22 @@
     :worker-name  (string/keyword, unique)
     :body-fn      (0-arg fn)
     :timeout-ms   (ms)
-    :interval-ms  (ms; periodic cadence)
+
+  And EITHER:
+     :interval-ms  (ms; periodic cadence)
+     OR
+     :schedule     (a chime sequence of Instants/ZonedDateTimes)
 
   No-op if a worker with same name exists.
 
   Returns nil."
-  [{:keys [worker-name interval-ms timeout-ms body-fn jitter-frac jitter-ms] :as config}]
-  (when-not (and worker-name body-fn interval-ms timeout-ms)
-    (throw (ex-info "Missing required worker config keys"
-                    {:expected [:worker-name :body-fn :interval-ms :timeout-ms]
-                     :config config})))
+  [{:keys [worker-name interval-ms schedule timeout-ms body-fn jitter-frac jitter-ms] :as config}]
+  (when-not (and worker-name body-fn (or schedule interval-ms) timeout-ms)
+    (let [safe-config (cond-> config
+                        schedule (assoc :schedule "<infinite-sequence>"))]
+     (throw (ex-info "Missing required worker config keys"
+                     {:expected [:worker-name :body-fn :interval-ms-OR-schedule :timeout-ms]
+                      :config safe-config}))))
 
   (let [wname (u/normalize-name worker-name)]
     (when-not (reg/get-worker wname)
@@ -91,10 +97,12 @@
                             worker-props)
 
             ;; Build a periodic schedule starting from now
-            {:keys [times next-eta* jitter-ms]} (s/build-times!
-                                                 {:interval-ms interval-ms
-                                                  :jitter-frac jitter-frac
-                                                  :jitter-ms   jitter-ms})
+            {:keys [times next-eta* jitter-ms]}
+            (s/build-times!
+             {:schedule    schedule
+              :interval-ms interval-ms
+              :jitter-frac jitter-frac
+              :jitter-ms   jitter-ms})
 
             ;; Start schedule; returns AutoCloseable
             schedule       (make-scheduler times
@@ -116,8 +124,10 @@
 
         (t/log! {:level :info :id ::start
                  :msg (str "Started worker: " wname
-                           (when (pos? jitter-ms)
-                             (str " (jitter ±" jitter-ms " ms)")))})))))
+                           (cond
+                             (pos? (long jitter-ms)) (str " (jitter ±" jitter-ms " ms)")
+                             schedule                " (custom schedule)"
+                             :else                   ""))})))))
 
 (defn- force-shutdown-executor
   [wname executor]

@@ -3,7 +3,7 @@
    [chime.core :as chime]
    [taoensso.truss :refer [have]])
   (:import
-   (java.time Instant Duration)
+   (java.time Instant Duration ZonedDateTime)
    (java.util.concurrent ThreadLocalRandom)))
 
 (set! *warn-on-reflection* true)
@@ -29,6 +29,35 @@
           u (.nextLong r (inc j))]  ; u ∈ [0, j+1) = [0, j]
       u)
     0))
+
+(defn- attach-next-eta!
+  "Wrap a time sequence so that realization of each Instant updates `next-eta*`.
+
+  This helper exists to support the non-jittered scheduling case, where the
+  underlying time sequence is produced by `chime/periodic-seq`.
+
+  Semantics mirror those described in `jittered-periodic-seq!`:
+
+  - `next-eta*` is updated as a *side effect of sequence realization*,
+    not as a result of task execution.
+  - In practice, this corresponds to the next scheduled tick that Chime
+    has already pulled from the time sequence and is waiting on.
+
+  While a task is executing, the scheduler may not advance the sequence,
+  so `next-eta*` may remain unchanged during long-running executions.
+  This is expected and consistent with Chime’s scheduling model.
+
+  See `jittered-periodic-seq!` for a detailed discussion of how Chime
+  consumes time sequences and how `next-eta*` is intended to be interpreted."
+  [times next-eta*]
+  (map (fn [t]
+         (let [ms (cond
+                    (instance? Instant t)       (.toEpochMilli ^Instant t)
+                    (instance? ZonedDateTime t) (.toEpochMilli (.toInstant ^ZonedDateTime t))
+                    :else (throw (ex-info "Unsupported time type in schedule" {:type (type t)})))]
+           (reset! next-eta* ms))
+         t)
+       times))
 
 (defn- jittered-periodic-seq!
   "Produce a lazy, infinite sequence of Instants suitable for use with chime.
@@ -92,32 +121,14 @@
                  (cons inst (step tms)))))]
       (step -1))))
 
-(defn- attach-next-eta!
-  "Wrap a time sequence so that realization of each Instant updates `next-eta*`.
+(defn- build-times-from-schedule
+  [schedule]
+  (let [atom* (atom nil)]
+    {:times (attach-next-eta! schedule atom*)
+     :next-eta* atom*
+     :jitter-ms 0}))
 
-  This helper exists to support the non-jittered scheduling case, where the
-  underlying time sequence is produced by `chime/periodic-seq`.
-
-  Semantics mirror those described in `jittered-periodic-seq!`:
-
-  - `next-eta*` is updated as a *side effect of sequence realization*,
-    not as a result of task execution.
-  - In practice, this corresponds to the next scheduled tick that Chime
-    has already pulled from the time sequence and is waiting on.
-
-  While a task is executing, the scheduler may not advance the sequence,
-  so `next-eta*` may remain unchanged during long-running executions.
-  This is expected and consistent with Chime’s scheduling model.
-
-  See `jittered-periodic-seq!` for a detailed discussion of how Chime
-  consumes time sequences and how `next-eta*` is intended to be interpreted."
-  [times next-eta*]
-  (map (fn [^Instant inst]
-         (reset! next-eta* (.toEpochMilli inst))
-         inst)
-       times))
-
-(defn build-times!
+(defn- build-times-from-interval
   "Construct a Chime-compatible time sequence for a periodic task.
 
   Returns a map with:
@@ -178,6 +189,12 @@
                     (attach-next-eta! (chime/periodic-seq base-now (Duration/ofMillis interval-ms))
                                       next-eta*))]
     {:times times :next-eta* next-eta* :jitter-ms j-ms}))
+
+(defn build-times!
+  [{:keys [schedule _interval-ms] :as opts}]
+  (if schedule
+    (build-times-from-schedule schedule)
+    (build-times-from-interval opts)))
 
 ;; Local Variables:
 ;; fill-column: 100000

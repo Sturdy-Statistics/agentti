@@ -1,9 +1,10 @@
 (ns agentti.lifecycle-test
   (:require
-   [clojure.test :refer [deftest is use-fixtures]]
+   [clojure.test :refer [deftest is testing use-fixtures]]
    [agentti.lifecycle :as lc]
    [agentti.registry :as reg])
   (:import
+   (java.time Instant)
    (java.util.concurrent ExecutorService)))
 
 ;; ensure tests don't leak workers across runs
@@ -48,3 +49,27 @@
     (is (= #{"a" "b"} (set (keys res))))
     (is (every? true? (vals res)))
     (is (empty? (reg/registry-snapshot)))))
+
+(deftest add-worker-with-custom-schedule
+  (testing "Worker accepts :schedule instead of :interval-ms"
+    (let [start-time (Instant/now)
+          ;; Create a mock infinite schedule (every second)
+          custom-sched (iterate #(.plusMillis ^Instant % 1000) start-time)
+
+          cfg {:worker-name :scheduled-worker
+               :body-fn (fn [])
+               :schedule custom-sched
+               :timeout-ms 1000
+               ;; Provide jitter to ensure it gets ignored
+               :jitter-ms 500}
+
+          _   (lc/add-worker! cfg)
+          w   (reg/get-worker :scheduled-worker)]
+
+      (is (some? w) "Worker should be registered")
+      (is (nil? (:interval-ms w)) "Interval should be nil for custom schedule")
+      (is (= 0 (:jitter-ms w)) "Jitter should be forced to 0 for custom schedule")
+
+      (testing "next-eta integration"
+        (is (some? (:next-eta w)))
+        (is (instance? clojure.lang.Atom (:next-eta w)))))))
