@@ -7,13 +7,17 @@
 **Noun:** ([Finnish](https://translate.google.com/?sl=fi&tl=en&text=agentti&op=translate)):
 agent, operative
 
-`agentti` provides a small, explicit framework for running **periodic background tasks** inside a long-running JVM process. 
+`agentti` provides a small, explicit framework for running **periodic background tasks** inside a long-running JVM process.
 It is designed for internal services and data pipelines that need a handful of reliable background jobs, but which do not require heavyweight infrastructure.
+
+Agentti was originally developed to meet the internal security and operational requirements of **Sturdy Statistics**.
+It is published as open source to support transparency, auditability, and reuse, but its design is intentionally conservative and driven by real production needs.
+We may not accept feature requests that dilute its focus.
 
 ## Rationale
 
-Many Clojure and JVM services need *a small number of background tasks* but do not want the complexity of a full job system (Quartz, distributed queues) or the cognitive overhead of building everything on top of `core.async`. 
-`agentti` takes a deliberately simple approach: each task runs on its own single-thread executor, is scheduled explicitly, cannot overlap, and can be started, inspected, and stopped as part of the normal service lifecycle. 
+Many Clojure and JVM services need *a small number of background tasks* but do not want the complexity of a full job system (Quartz, distributed queues) or the cognitive overhead of building everything on top of `core.async`.
+`agentti` takes a deliberately simple approach: each task runs on its own single-thread executor, is scheduled explicitly, cannot overlap, and can be started, inspected, and stopped as part of the normal service lifecycle.
 While `agentti` is built on top of [`chime`](https://github.com/jarohen/chime) for time-based scheduling, it adds explicit execution semantics—dedicated executors, timeouts, lifecycle management, and introspection.
 Such features are often reimplemented ad hoc in production services.
 
@@ -62,7 +66,7 @@ The API favors clarity and predictability over abstractions.
 ## Schedule drift and jitter
 
 When jitter is enabled, `agentti` intentionally applies it *cumulatively* between runs.
-Each execution time is computed relative to the previous execution, not to a fixed wall clock. 
+Each execution time is computed relative to the previous execution, not to a fixed wall clock.
 This introduces a bounded random walk, so scheduled times gradually drift.
 This behavior helps avoid synchronized “thundering herd” effects across workers and across processes, and favors de-correlation over strict calendar alignment.
 
