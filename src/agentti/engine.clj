@@ -46,12 +46,12 @@
         (.setDaemon true))))) ;don't prevent java from exiting if thread is running
 
 (defn- run-task
-  "runs `body-fn` in the given `executor` and puts the result on `exec-ch`"
+  "runs `body-fn` in the given `executor` and puts the result on `exec-ch`.
+   Swaps nils for ::success to prevent core.async crashes."
   ^Future [^ExecutorService executor ^Callable body-fn exec-ch]
   (letfn [(runme []
-            (let [res (try (body-fn) (catch Throwable e e))]
-              ;; core.async channels crash if you put nil. Use a sentinel.
-              (async/put! exec-ch (if (nil? res) ::success res))))]
+             (let [res (try (body-fn) (catch Throwable e e))]
+               (async/put! exec-ch (if (nil? res) ::success res))))]
     (try
       (.submit executor ^Callable runme)
       (catch RejectedExecutionException _
@@ -68,7 +68,6 @@
              :data {:worker-name worker-name}})
 
     (.shutdownNow executor)
-
     (when-not (.awaitTermination executor 500 TimeUnit/MILLISECONDS)
       (t/log! {:level :warn :id ::stop-still-running :data {:worker-name worker-name}}))))
 
@@ -83,7 +82,7 @@
    ;; these are all atoms
    {:keys [next-eta dropped-count in-flight? last-run running?] :as props}]
 
-  (let [work-chan (async/chan) ; no buffer!
+  (let [work-chan (async/chan) ;; Unbuffered, direct handoff
         stop-chan (async/chan)
         executor  (Executors/newSingleThreadExecutor
                    (named-thread-factory worker-name))]
@@ -98,39 +97,48 @@
 
           (reset! next-eta t-ms)
 
-          (if (< max-sleep-ms wait-ms)
-            ;; CASE 1: The wait is huge. Sleep for a day, then recalculate.
-            ;; keeps thread from going to sleep, and corrects for clock drift
+          (cond
+            ;; CASE 1: The tick is STALE.
+            ;; Recur immediately and fast-forward to the present.
+            (< wait-ms -2000)
+            (do
+              (swap! dropped-count inc)
+              (recur (next sq)))
+
+            ;; CASE 2: The wait is HUGE. Sleep for a day, then recalculate.
+            ;; Keeps thread from going to sleep forever and corrects for clock drift.
+            (< max-sleep-ms wait-ms)
             (let [[_ port] (async/alts! [(async/timeout max-sleep-ms) stop-chan])]
               (if (= port stop-chan)
                 (t/log! {:level :info :id ::scheduler-stopped :data {:worker-name worker-name}})
                 (recur sq)))
 
-            ;; CASE 2: We are within the final window. Sleep the exact remaining amount.
-            (let [tick-ch (if (pos? wait-ms) (async/timeout wait-ms) (async/chan))
-                  [_ port]   (if (pos? wait-ms)
-                               (async/alts! [tick-ch stop-chan])
-                               [nil tick-ch])]
+            ;; CASE 3: We are within the final window. Sleep the exact remaining amount.
+            :else
+            (let [tick-ch  (if (pos? wait-ms)
+                             (async/timeout wait-ms)
+                             (doto (async/chan) (async/close!)))
+                  [_ port] (async/alts! [tick-ch stop-chan])]
 
               (if (= port stop-chan)
                 (t/log! {:level :info :id ::scheduler-stopped :data {:worker-name worker-name}})
-                (do
-                  (if @in-flight?
-                    (do
-                      (swap! dropped-count inc)
-                      (t/log! {:level :warn :id ::drop :data {:worker-name worker-name}}))
+                ;; CAS: Atomically acquire the lock.
+                (if (compare-and-set! in-flight? false true)
+                  ;; Lock acquired. Hand the tick directly to the worker.
+                  (do
+                    (async/alts! [[work-chan t-ms] stop-chan])
+                    (recur (next sq)))
 
-                    ;; The worker is NOT busy. Safely block until it takes the tick.
-                    ;; We include `stop-chan` so we can still shut down cleanly during this micro-wait.
-                    (async/alts! [[work-chan t-ms] stop-chan]))
-                  ;; use next not rest!
-                  (recur (next sq)))))))))
+                  ;; Lock denied. The worker is busy.
+                  (do
+                    (swap! dropped-count inc)
+                    (t/log! {:level :warn :id ::drop :data {:worker-name worker-name}})
+                    (recur (next sq))))))))))
 
     ;; 2. THE WORKER LOOP
     (async/go-loop []
       (let [[_t-ms port] (async/alts! [work-chan stop-chan])]
         (when (= port work-chan)
-          (reset! in-flight? true)
           (reset! last-run (System/currentTimeMillis))
 
           (let [start-ms     (System/currentTimeMillis)
@@ -157,6 +165,7 @@
                 :else
                 (update-success-metrics! start-ms props))))
 
+          ;; Release the lock AFTER processing is complete
           (reset! in-flight? false)
           (recur))))
 

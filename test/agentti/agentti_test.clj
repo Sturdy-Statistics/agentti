@@ -93,6 +93,57 @@
       (is (false? @(:in-flight? props)))
       (stop!))))
 
+(deftest engine-stale-tick-fast-forward
+  (ts/with-quiet-logging
+    (let [props (mock-worker-props)
+          now   (Instant/now)
+
+          ;; Create 50 ticks that are 10 minutes in the past
+          stale-ticks (repeat 50 (.minusSeconds now 600))
+
+          ;; Append one tick for right now
+          schedule    (concat stale-ticks [now])
+
+          stop! (engine/start-worker!
+                 "unit-stale"
+                 {:schedule     schedule
+                  :timeout-ms   1000
+                  :body-fn      (fn [] (Thread/sleep 10))}
+                 props)]
+
+      ;; Wait for the ONE valid run to finish
+      (is (ts/eventually #(pos? @(:num-runs props)) 500))
+
+      ;; Assert the exact machine-gun skip behavior
+      (is (= 1 @(:num-runs props)) "Only the current tick should have executed")
+      (is (= 50 @(:dropped-count props)) "All 50 stale ticks should be instantly dropped")
+
+      (stop!))))
+
+(deftest engine-stale-tick-grace-period
+  (ts/with-quiet-logging
+    (let [props (mock-worker-props)
+          now   (Instant/now)
+
+          ;; Create 1 tick that is exactly 1 second in the past.
+          ;; This is safely inside the -2000ms grace period.
+          grace-tick (.minusSeconds now 1)
+
+          stop! (engine/start-worker!
+                 "unit-grace"
+                 {:schedule     [grace-tick]
+                  :timeout-ms   1000
+                  :body-fn      (fn [] (Thread/sleep 10))}
+                 props)]
+
+      (is (ts/eventually #(pos? @(:num-runs props)) 500))
+
+      ;; Assert that the grace period caught it
+      (is (= 1 @(:num-runs props)) "A tick within the 2-second grace period should execute")
+      (is (= 0 @(:dropped-count props)) "It should NOT be dropped as a stale tick")
+
+      (stop!))))
+
 ;;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Integration tests (chime/schedule -> lifecycle -> engine)
 
