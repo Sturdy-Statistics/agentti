@@ -14,6 +14,11 @@ Agentti was developed to meet the internal security and operational requirements
 It is published as open source to support transparency, auditability, and reuse, but its design is intentionally conservative and driven by real production needs.
 We may not accept feature requests that dilute its focus.
 
+> [!WARNING]
+> **NOTE** v0.2.0 represents a breaking change from v0.1.x.
+> `agentti` moved from using `chime` to run tasks to using `core.async`.
+> Its API changed slightly in the process.
+
 ## Rationale
 
 Many Clojure and JVM services need *a small number of background tasks* but do not want the complexity of a full job system (Quartz, distributed queues).
