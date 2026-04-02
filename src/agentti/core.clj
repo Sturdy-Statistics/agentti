@@ -14,15 +14,17 @@
   (lifecycle/add-worker! config))
 
 (defn stop-worker!
-  "Stop a worker by name. With `force?` truthy, interrupts in-flight work."
-  ([name] (lifecycle/stop-worker! name))
-  ([name force?] (lifecycle/stop-worker! name force?)))
+  "Stops a worker by name. Initiates a graceful shutdown, falling back
+   to a forced interrupt if the worker does not exit within 3 seconds."
+  [name]
+  (lifecycle/stop-worker! name))
 
 (defn stop-all-workers!
-  "Stop all workers. With `force?` truthy, interrupts in-flight work.
-  Returns a map of {worker-name -> true|nil}."
-  ([] (lifecycle/stop-all-workers!))
-  ([force?] (lifecycle/stop-all-workers! force?)))
+  "Stops all registered workers. Initiates a graceful shutdown, falling back
+   to a forced interrupt if a worker does not exit within 3 seconds.
+   Returns a map of {worker-name -> true|nil}."
+  []
+  (lifecycle/stop-all-workers!))
 
 ;;; Introspection / admin
 

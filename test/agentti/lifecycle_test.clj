@@ -2,10 +2,8 @@
   (:require
    [clojure.test :refer [deftest is testing use-fixtures]]
    [agentti.lifecycle :as lc]
-   [agentti.registry :as reg])
-  (:import
-   (java.time Instant)
-   (java.util.concurrent ExecutorService)))
+   [agentti.registry :as reg]
+   [agentti.schedule :as sched]))
 
 ;; ensure tests don't leak workers across runs
 (use-fixtures :each
@@ -13,63 +11,54 @@
     (try
       (f)
       (finally
-        (lc/stop-all-workers! true)))))
+        ;; Removed the `true` parameter
+        (lc/stop-all-workers!)))))
 
 (deftest add-worker-registers-once
   (let [cfg {:worker-name :w
-             :body-fn (fn [])
-             :interval-ms 1000
-             :timeout-ms  1000
-             :jitter-frac 0.1}
+             :body-fn     (fn [])
+             :schedule    (sched/periodic-seq 1000 {:jitter-frac 0.1})
+             :timeout-ms  1000}
         _   (lc/add-worker! cfg)
         e1  (reg/get-worker :w)
         _   (lc/add-worker! cfg)
         e2  (reg/get-worker :w)]
     (is (some? e1))
     (is (some? e2))
-    (is (identical? (:executor e1) (:executor e2)))
-    (is (identical? (:schedule e1) (:schedule e2)))))
+    ;; Since it's a no-op the second time, the generated stop-fn should be identical
+    (is (identical? (:stop-fn e1) (:stop-fn e2)))))
 
-(deftest stop-worker-removes-and-shuts-down-executor
+(deftest stop-worker-removes-from-registry
   (lc/add-worker! {:worker-name "w"
-                   :body-fn (fn [])
-                   :interval-ms 1000
-                   :timeout-ms  1000
-                   :jitter-frac 0.1})
+                   :body-fn     (fn [])
+                   :schedule    (sched/periodic-seq 1000)
+                   :timeout-ms  1000})
   (let [e (reg/get-worker "w")]
     (is (some? e))
-    (is (lc/stop-worker! "w"))
+    (is (true? (lc/stop-worker! "w")))
     (is (nil? (reg/get-worker "w")))
-    (is (.isShutdown ^ExecutorService (:executor e)))))
+    (is (nil? (lc/stop-worker! "w")) "Stopping twice returns nil")))
 
 (deftest stop-all-workers-stops-everything
-  (lc/add-worker! {:worker-name "a" :body-fn (fn []) :interval-ms 1000 :timeout-ms 1000})
-  (lc/add-worker! {:worker-name "b" :body-fn (fn []) :interval-ms 1000 :timeout-ms 1000})
-  (let [res (lc/stop-all-workers! true)]
+  (lc/add-worker! {:worker-name "a" :body-fn (fn []) :schedule (sched/periodic-seq 1000) :timeout-ms 1000})
+  (lc/add-worker! {:worker-name "b" :body-fn (fn []) :schedule (sched/periodic-seq 1000) :timeout-ms 1000})
+  (let [res (lc/stop-all-workers!)]
     (is (= #{"a" "b"} (set (keys res))))
     (is (every? true? (vals res)))
     (is (empty? (reg/registry-snapshot)))))
 
-(deftest add-worker-with-custom-schedule
-  (testing "Worker accepts :schedule instead of :interval-ms"
-    (let [start-time (Instant/now)
-          ;; Create a mock infinite schedule (every second)
-          custom-sched (iterate #(.plusMillis ^Instant % 1000) start-time)
+(deftest add-worker-validates-config
+  (testing "Throws on missing required keys"
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (lc/add-worker! {:worker-name "w"
+                                  :body-fn     (fn [])}))) ;; Missing schedule and timeout
 
-          cfg {:worker-name :scheduled-worker
-               :body-fn (fn [])
-               :schedule custom-sched
-               :timeout-ms 1000
-               ;; Provide jitter to ensure it gets ignored
-               :jitter-ms 500}
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (lc/add-worker! {:worker-name "w"
+                                  :schedule    (fn [] [])
+                                  :timeout-ms  100}))) ;; Missing body-fn
 
-          _   (lc/add-worker! cfg)
-          w   (reg/get-worker :scheduled-worker)]
-
-      (is (some? w) "Worker should be registered")
-      (is (nil? (:interval-ms w)) "Interval should be nil for custom schedule")
-      (is (= 0 (:jitter-ms w)) "Jitter should be forced to 0 for custom schedule")
-
-      (testing "next-eta integration"
-        (is (some? (:next-eta w)))
-        (is (instance? clojure.lang.Atom (:next-eta w)))))))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (lc/add-worker! {:body-fn    (fn [])
+                                  :schedule   (fn [] [])
+                                  :timeout-ms 100}))))) ;; Missing worker-name

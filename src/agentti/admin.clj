@@ -3,8 +3,7 @@
    [agentti.util :as util]
    [agentti.registry :as reg])
   (:import
-   (java.time Instant)
-   (java.util.concurrent ExecutorService)))
+   (java.time Instant)))
 
 (set! *warn-on-reflection* true)
 
@@ -12,22 +11,6 @@
   "Deref an atom-like value, returning nil if it is nil."
   [a]
   (when a @a))
-
-(defn- executor-running?
-  [executor]
-  (and executor
-       (not (.isShutdown ^ExecutorService executor))))
-
-(defn- worker-status
-  "Compute {:running? <bool> :status <kw>} from executor + in-flight? flag."
-  [executor in-flight]
-  (let [running? (executor-running? executor)
-        status   (cond
-                   in-flight :running
-                   running?  :idle
-                   :else     :stopped)]
-    {:running? running?
-     :status   status}))
 
 (defn- fmt-instant
   "Format epoch-ms as an Instant string, or nil."
@@ -65,44 +48,41 @@
 
 (defn- worker->admin-row
   "Build the admin/status map for a single worker registry entry."
-  [now-ms wname {:keys [executor next-eta
-                        interval-ms timeout-ms jitter-ms
-                        started-at
+  [now-ms wname {:keys [started-at
+                        running?
+                        next-eta
+                        timeout-ms
                         num-runs num-errors last-error
                         in-flight? dropped-count
                         last-run last-duration _total-runtime avg-duration]}]
-  (let [lr     (dref last-run)
-        ld     (dref last-duration)
-        av     (dref avg-duration)
-        nr     (dref num-runs)
-        ne     (dref num-errors)
-        dr     (dref dropped-count)
-        infl   (boolean (dref in-flight?))
-        err    (dref last-error)
-        eta-ms (some-> next-eta deref)
-        {:keys [running? status]} (worker-status executor infl)]
-    {:worker-name     wname
-     :status          status
-     :running?        (boolean running?)
+  (let [lr       (dref last-run)
+        eta-ms   (some-> next-eta deref)
+        is-infl? (boolean (dref in-flight?))
+        is-run?  (boolean (dref running?))
+        status   (cond
+                   is-infl? :running
+                   is-run?  :idle
+                   :else    :stopped)]
 
-     :interval-ms     interval-ms
-     :timeout-ms      timeout-ms
-     :jitter-ms       jitter-ms
+    {:worker-name    wname
+     :status         status
+     :running?       is-run?
+     :timeout-ms     timeout-ms
 
-     :num-runs        nr
-     :num-errors      ne
-     :last-error      (render-last-error err)
-     :in-flight?      infl
-     :dropped         dr
-     :last-run        (fmt-instant lr)
-     :last-duration   ld
-     ;; total-runtime
-     :avg-duration    av
+     :num-runs       (dref num-runs)
+     :num-errors     (dref num-errors)
+     :last-error     (-> last-error dref render-last-error)
 
-     :uptime          (uptime-str now-ms started-at)
-     :since-last-run  (since-last-run-str now-ms lr)
-     :next-run-eta    (fmt-instant eta-ms)
-     :next-run-in     (fmt-eta-in now-ms eta-ms)}))
+     :in-flight?     is-infl?
+     :dropped        (dref dropped-count)
+     :last-run       (fmt-instant lr)
+     :last-duration  (dref last-duration)
+     :avg-duration   (dref avg-duration)
+
+     :uptime         (uptime-str now-ms started-at)
+     :since-last-run (since-last-run-str now-ms lr)
+     :next-run-eta   (fmt-instant eta-ms)
+     :next-run-in    (fmt-eta-in now-ms eta-ms)}))
 
 (defn list-workers
   "Return a vector of worker status maps for use in admin UIs."

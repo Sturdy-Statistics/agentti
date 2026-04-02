@@ -1,5 +1,6 @@
 {:paths ["src"]
- :deps {com.taoensso/telemere       {:mvn/version "1.0.1"}
+ :deps {org.clojure/core.async      {:mvn/version "1.8.741"}
+        com.taoensso/telemere       {:mvn/version "1.0.1"}
         com.taoensso/truss          {:mvn/version "2.2.0"}
         jarohen/chime               {:mvn/version "0.3.3"}}
 
