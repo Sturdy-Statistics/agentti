@@ -13,15 +13,15 @@
 (defn format-duration
   "Format seconds as \"Dd HHh MMm SSs\" (compacts leading zeros)."
   [total-secs]
-  (let [secs        (mod total-secs 60)
-        total-mins  (quot total-secs 60)
-        mins        (mod total-mins 60)
-        total-hours (quot total-mins 60)
-        hours       (mod total-hours 24)
+  (let [secs        (mod  total-secs  60)
+        total-mins  (quot total-secs  60)
+        mins        (mod  total-mins  60)
+        total-hours (quot total-mins  60)
+        hours       (mod  total-hours 24)
         days        (quot total-hours 24)]
     (string/trim
-     (str (when (pos? days)  (str days  "d "))
-          (when (or (pos? days) (pos? hours)) (str hours "h "))
+     (str (when (pos? days)                               (str days  "d "))
+          (when (or (pos? days) (pos? hours))             (str hours "h "))
           (when (or (pos? days) (pos? hours) (pos? mins)) (str mins  "m "))
           secs "s"))))
 

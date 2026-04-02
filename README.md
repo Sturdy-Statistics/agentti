@@ -7,19 +7,27 @@
 **Noun:** ([Finnish](https://translate.google.com/?sl=fi&tl=en&text=agentti&op=translate)):
 agent, operative
 
-`agentti` provides a small, explicit framework for running **periodic background tasks** inside a long-running JVM process.
-It is designed for internal services and data pipelines that need a handful of reliable background jobs, but which do not require heavyweight infrastructure.
+`agentti` provides a small, explicit framework for running **periodic background tasks** inside a long-running JVM process. 
+It is designed for internal services and data pipelines that need a handful of highly reliable background jobs, but do not require heavyweight infrastructure.
 
-Agentti was originally developed to meet the internal security and operational requirements of **Sturdy Statistics**.
+Agentti was developed to meet the internal security and operational requirements of **Sturdy Statistics**.
 It is published as open source to support transparency, auditability, and reuse, but its design is intentionally conservative and driven by real production needs.
 We may not accept feature requests that dilute its focus.
 
+> [!WARNING]
+> **NOTE** v0.2.0 represents a breaking change from v0.1.x.
+> `agentti` moved from using `chime` to run tasks to using `core.async`.
+> Its API changed slightly in the process.
+
 ## Rationale
 
-Many Clojure and JVM services need *a small number of background tasks* but do not want the complexity of a full job system (Quartz, distributed queues) or the cognitive overhead of building everything on top of `core.async`.
-`agentti` takes a deliberately simple approach: each task runs on its own single-thread executor, is scheduled explicitly, cannot overlap, and can be started, inspected, and stopped as part of the normal service lifecycle.
-While `agentti` is built on top of [`chime`](https://github.com/jarohen/chime) for time-based scheduling, it adds explicit execution semantics—dedicated executors, timeouts, lifecycle management, and introspection.
-Such features are often reimplemented ad hoc in production services.
+Many Clojure and JVM services need *a small number of background tasks* but do not want the complexity of a full job system (Quartz, distributed queues).
+
+`agentti` takes a deliberately resilient approach by splitting the problem in two:
+1. Chronology (`java.time` + `chime`): Pure generation of absolute-time sequences.
+2. Execution (`core.async` + `java.util.concurrent`): A `core.async` state machine that handles sleeping, timeouts, dropped ticks, and graceful shutdowns, with tasks run in dedicated JVM threads for cancellation.
+
+The result is a library that guarantees explicit execution semantics—tasks never overlap, hung threads are explicitly interrupted, and long-running schedules are immune to system clock drift.
 
 ## Installation
 
@@ -31,87 +39,106 @@ Add to `deps.edn`:
 
 ## What this library is for
 
-- Running periodic background tasks inside a JVM service
-- Tasks that **must not overlap**
-- Simple operational visibility (status, runtime, errors)
-- Explicit lifecycle management (start, stop, shutdown)
+- Running periodic background tasks inside a JVM service (cache refreshers, polling loops, lightweight ETL).
+- Tasks that **must not overlap**.
+- Explicit lifecycle management (graceful shutdown by default, with forced interruption fallback).
+- Simple operational visibility (status, runtime, ETA, errors) for internal dashboards.
 
-Typical examples:
-- cache refreshers
-- polling loops
-- maintenance jobs
-- lightweight ETL or indexing tasks
-
-## What this library is *not* for
+## What this library is not for
 
 - Distributed job queues
 - Cron replacement
 - High-throughput task execution
-- Exactly-once or persistent scheduling semantics
+- Exactly-once or persistent scheduling semantics (if a process dies, in-memory state dies with it)
 
 If you need persistence, distribution, or external coordination, this is not the right tool.
 
-## Design highlights
-
-- **One worker = one single-thread executor**
-- **Non-blocking scheduling** scheduler threads never execute user work
-- **Explicit timeouts** per run
-- **No overlapping executions**
-- **Graceful shutdown by default**, with force-stop available
-- **Observable state** via an admin/introspection API
-- Built on top of [`chime`](https://github.com/jarohen/chime)
-
-The API favors clarity and predictability over abstractions.
-
 ## Schedule drift and jitter
+
+When configuring workers, `agentti` provides an optional `agentti.schedule` utility to generate bounded random walks.
 
 When jitter is enabled, `agentti` intentionally applies it *cumulatively* between runs.
 Each execution time is computed relative to the previous execution, not to a fixed wall clock.
 This introduces a bounded random walk, so scheduled times gradually drift.
 This behavior helps avoid synchronized “thundering herd” effects across workers and across processes, and favors de-correlation over strict calendar alignment.
 
-If you require a predictable, non-drifting schedule, you can bypass this behavior by using `chime/periodic-seq` directly and wrapping it with `agentti.schedules/attach-next-eta!` to retain introspection support.
-(This is also what `agentti` does with jitter disabled.)
-
 ## Basic usage
 
+Workers require a unique name, a timeout, a body function, and a 0-arity function that returns a sequence of `java.time.Instant`s.
+
 ```clojure
-(require '[agentti.lifecycle :as agentti])
+(require '[agentti.core :as agentti]
+         '[agentti.schedule :as sched])
 
 (agentti/add-worker!
-  {:worker-name :example
-   :interval-ms 10_000
-   :timeout-ms  2_000
-   :body-fn     (fn []
-                  (println "hello from background worker"))})
+ {:worker-name :session-pruner
+  
+  ;; Schedules MUST be passed as a function to ensure fresh lazy-sequences.
+  ;; sched/periodic-seq is a drop-in utility for intervals and jitter.
+  :schedule    (fn [] (sched/periodic-seq 10_000 {:jitter-frac 0.1}))
+  
+  ;; Hard timeout for the thread
+  :timeout-ms  2000
+  
+  ;; The work to do
+  :body-fn     (fn [] (println "Pruning expired sessions..."))})
 
-;; later…
-(agentti/stop-worker! :example)
+;; later… (initiates a 3-second graceful shutdown, then forces interruption)
+(agentti/stop-worker! :session-pruner)
+```
+
+For strict, non-drifting calendar schedules (e.g., “Midnight on the 1st of the month”), simply pass a function returning a standard `chime/periodic-seq`.
+
+```clj
+(def ^:private ^ZoneId pacific-tz (ZoneId/of "America/Los_Angeles"))
+
+(defn- daily-at-hour
+  "Returns a Chime schedule sequence that fires daily at the specified hour (0-23) in Pacific Time."
+  [hour]
+  (->> (chime/periodic-seq
+        (let [^ZonedDateTime now (ZonedDateTime/now pacific-tz)]
+          (-> now
+              (.withHour (int hour))
+              (.withMinute 0)
+              (.withSecond 0)
+              (.withNano 0))
+        (Period/ofDays 1))
+       (chime/without-past-times)))
+
+(def daily-1am-schedule (daily-at-hour 1))
+(def daily-2am-schedule (daily-at-hour 2))
+(def daily-3am-schedule (daily-at-hour 3))
+
 ```
 
 ## Introspection / admin
 
-```clj
-(require '[agentti.admin :as admin])
+`agentti` tracks granular metrics for every worker, intended for direct exposure to internal admin endpoints or dashboards.
 
-(admin/list-workers)
+```clj
+(require '[agentti.core :as agentti])
+
+(agentti/list-workers)
 ;; =>
-;; [{:worker-name "example"
-;;   :status :idle
+;; [{:worker-name "session-pruner"
+;;   :status :idle            ;; :running, :idle, or :stopped
+;;   :running? true
+;;   :timeout-ms 2000
 ;;   :num-runs 12
-;;   :last-duration 87
-;;   :next-run-eta "..."}]
+;;   :num-errors 0
+;;   :last-error nil
+;;   :in-flight? false
+;;   :dropped 0               ;; Number of ticks dropped due to overlap
+;;   :last-run "2026-04-02T18:30:00Z"
+;;   :last-duration 87        ;; ms
+;;   :avg-duration 92         ;; ms
+;;   :uptime "14d 2h 5m 10s"
+;;   :since-last-run "10s"
+;;   :next-run-eta "2026-04-02T18:30:10Z"
+;;   :next-run-in "10s"}]
 ```
 
 This is intended for internal admin endpoints or dashboards.
-
-## Notes on scheduling and dropped runs
-
-Worker callbacks submitted by `agentti` are **non-blocking** with respect to the scheduler.
-Each tick submits work to a dedicated executor and returns immediately, allowing subsequent ticks to arrive on time.
-
-If a tick occurs while a previous run is still in flight, it is intentionally dropped and recorded in the worker’s metrics.
-This provides accurate visibility into overload or misconfigured intervals, without allowing overlapping executions.
 
 ## License
 
