@@ -2,3 +2,5 @@
 .nrepl-port
 target/
 *.pom.asc
+clj-watson.properties
+*.md
