@@ -10,14 +10,13 @@
   ;; Save current handlers, silence logging, run, restore.
   (let [saved-handlers (t/get-handlers)]
     (remove-all-handlers!)
-    (t/set-min-level! :fatal)
+    (t/add-handler! :noop (fn [_] nil))
     (try
       (thunk)
       (finally
         (remove-all-handlers!)
         (doseq [[k v] saved-handlers]
-          (t/add-handler! k v))
-        (t/set-min-level! :info)))))
+          (t/add-handler! k v))))))
 
 (defmacro with-quiet-logging
   "Execute BODY with Telemere logging suppressed (no console/file output)."
