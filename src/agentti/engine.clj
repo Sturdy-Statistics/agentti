@@ -125,9 +125,12 @@
                 ;; CAS: Atomically acquire the lock.
                 (if (compare-and-set! in-flight? false true)
                   ;; Lock acquired. Hand the tick directly to the worker.
-                  (do
-                    (async/alts! [[work-chan t-ms] stop-chan])
-                    (recur (next sq)))
+                  (let [[accepted? port] (async/alts! [[work-chan t-ms] stop-chan])]
+                    (if (and (= port work-chan) accepted?)
+                      ;; Worker accepted the tick and will release in-flight? after processing.
+                      (recur (next sq))
+                      ;; Handoff failed or stop won; scheduler must release in-flight?.
+                      (reset! in-flight? false)))
 
                   ;; Lock denied. The worker is busy.
                   (do
