@@ -66,6 +66,7 @@ This behavior helps avoid synchronized “thundering herd” effects across work
 
 Workers require a unique name, a timeout, a body function, and a seqable schedule of absolute times.
 Schedule items may be `java.time.Instant`, `java.time.ZonedDateTime`, `java.util.Date`, or epoch milliseconds.
+A `nil` or empty schedule is accepted and registers a dormant worker with no scheduled ticks.
 
 ```clojure
 (require '[agentti.core :as agentti]
