@@ -20,7 +20,6 @@
       (f)
       (finally
         ;; Make sure we don't bleed workers across tests.
-        ;; (Removed `true` since stop-all-workers! no longer takes a force? param)
         (ts/with-quiet-logging
           (l/stop-all-workers!))))))
 

@@ -64,7 +64,8 @@ This behavior helps avoid synchronized “thundering herd” effects across work
 
 ## Basic usage
 
-Workers require a unique name, a timeout, a body function, and a 0-arity function that returns a sequence of `java.time.Instant`s.
+Workers require a unique name, a timeout, a body function, and a seqable schedule of absolute times.
+Schedule items may be `java.time.Instant`, `java.time.ZonedDateTime`, `java.util.Date`, or epoch milliseconds.
 
 ```clojure
 (require '[agentti.core :as agentti]
@@ -73,9 +74,8 @@ Workers require a unique name, a timeout, a body function, and a 0-arity functio
 (agentti/add-worker!
  {:worker-name :session-pruner
   
-  ;; Schedules MUST be passed as a function to ensure fresh lazy-sequences.
-  ;; sched/periodic-seq is a drop-in utility for intervals and jitter.
-  :schedule    (fn [] (sched/periodic-seq 10_000 {:jitter-frac 0.1}))
+  ;; sched/periodic-seq returns a lazy schedule sequence for intervals and jitter.
+  :schedule    (sched/periodic-seq 10_000 {:jitter-frac 0.1})
   
   ;; Hard timeout for the thread
   :timeout-ms  2000
@@ -87,7 +87,7 @@ Workers require a unique name, a timeout, a body function, and a 0-arity functio
 (agentti/stop-worker! :session-pruner)
 ```
 
-For strict, non-drifting calendar schedules (e.g., “Midnight on the 1st of the month”), simply pass a function returning a standard `chime/periodic-seq`.
+For strict, non-drifting calendar schedules (e.g., “Midnight on the 1st of the month”), pass a standard `chime/periodic-seq`.
 
 ```clj
 (def ^:private ^ZoneId pacific-tz (ZoneId/of "America/Los_Angeles"))

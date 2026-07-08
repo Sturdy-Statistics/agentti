@@ -11,7 +11,6 @@
     (try
       (f)
       (finally
-        ;; Removed the `true` parameter
         (lc/stop-all-workers!)))))
 
 (deftest add-worker-registers-once

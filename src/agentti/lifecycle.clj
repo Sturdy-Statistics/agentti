@@ -8,13 +8,13 @@
 (set! *warn-on-reflection* true)
 
 (defn add-worker!
-  "Register and launch a periodic worker using chime.
+  "Register and launch a periodic worker.
 
   Required keys:
     :worker-name  (string/keyword, unique)
     :body-fn      (0-arg fn)
     :timeout-ms   (ms)
-    :schedule     (a chime sequence of Instants/ZonedDateTimes)
+    :schedule     (seqable absolute times: Instant, ZonedDateTime, Date, or epoch ms)
 
   No-op if a worker with same name exists.
 
@@ -56,7 +56,7 @@
         (t/log! {:level :info :id ::start :data {:worker-name wname}})))))
 
 (defn stop-worker!
-  "Stops the named worker. If `force?` is truthy, interrupts in-flight task(s).
+  "Stops the named worker, interrupting in-flight task(s) if graceful shutdown times out.
    Returns true if a worker was found (and shutdown initiated), else nil."
   [worker-name]
   (let [wname (u/normalize-name worker-name)]
