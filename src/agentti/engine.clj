@@ -108,7 +108,7 @@
             ;; CASE 2: The wait is HUGE. Sleep for a day, then recalculate.
             ;; Keeps thread from going to sleep forever and corrects for clock drift.
             (< max-sleep-ms wait-ms)
-            (let [[_ port] (async/alts! [(async/timeout max-sleep-ms) stop-chan])]
+            (let [[_ port] (async/alts! [stop-chan (async/timeout max-sleep-ms)] :priority true)]
               (if (= port stop-chan)
                 (t/log! {:level :info :id ::scheduler-stopped :data {:worker-name worker-name}})
                 (recur sq)))
@@ -118,14 +118,14 @@
             (let [tick-ch  (if (pos? wait-ms)
                              (async/timeout wait-ms)
                              (doto (async/chan) (async/close!)))
-                  [_ port] (async/alts! [tick-ch stop-chan])]
+                  [_ port] (async/alts! [stop-chan tick-ch] :priority true)]
 
               (if (= port stop-chan)
                 (t/log! {:level :info :id ::scheduler-stopped :data {:worker-name worker-name}})
                 ;; CAS: Atomically acquire the lock.
                 (if (compare-and-set! in-flight? false true)
                   ;; Lock acquired. Hand the tick directly to the worker.
-                  (let [[accepted? port] (async/alts! [[work-chan t-ms] stop-chan])]
+                  (let [[accepted? port] (async/alts! [stop-chan [work-chan t-ms]] :priority true)]
                     (if (and (= port work-chan) accepted?)
                       ;; Worker accepted the tick and will release in-flight? after processing.
                       (recur (next sq))
@@ -140,7 +140,7 @@
 
     ;; 2. THE WORKER LOOP
     (async/go-loop []
-      (let [[t-ms port] (async/alts! [work-chan stop-chan])]
+      (let [[t-ms port] (async/alts! [stop-chan work-chan] :priority true)]
         (when (and (= port work-chan) (some? t-ms)) ; t-ms is nil if work-chan closed
           (reset! last-run (System/currentTimeMillis))
 
@@ -150,7 +150,7 @@
                 ^Future task (run-task executor body-fn exec-ch)]
 
             #_{:clj-kondo/ignore [:redundant-let]}
-            (let [[result port] (async/alts! [exec-ch timeout-ch stop-chan])]
+            (let [[result port] (async/alts! [stop-chan exec-ch timeout-ch] :priority true)]
               (cond
                 (= port timeout-ch)
                 (do (when task (.cancel ^Future task true))
