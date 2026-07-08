@@ -33,6 +33,5 @@
   "Remove worker `name` from the registry. Returns the removed entry (or nil)."
   [name]
   (let [k (normalize-name name)
-        old (get @workers* k)]
-    (swap! workers* dissoc k)
-    old))
+        [old _new] (swap-vals! workers* dissoc k)]
+    (get old k)))

@@ -7,6 +7,8 @@
 
 (set! *warn-on-reflection* true)
 
+(defonce ^:private lifecycle-lock (atom nil))
+
 (defn add-worker!
   "Register and launch a periodic worker.
 
@@ -26,45 +28,46 @@
                  (nat-int? timeout-ms))
     (let [safe-config (cond-> config
                         schedule (assoc :schedule "<infinite-sequence>"))]
-     (throw (ex-info "Missing required worker config keys"
-                     {:expected [:worker-name :body-fn :schedule :timeout-ms]
-                      :config safe-config}))))
+      (throw (ex-info "Missing required worker config keys"
+                      {:expected [:worker-name :body-fn :schedule :timeout-ms]
+                       :config safe-config}))))
 
   (let [wname (u/normalize-name worker-name)]
-    (when-not (reg/get-worker wname)
-      (let [worker-props {:started-at     (System/currentTimeMillis)
-                          :running?       (atom true)
-                          :next-eta       (atom nil)
-                          :num-runs       (atom 0)
-                          :num-errors     (atom 0)
-                          :last-error     (atom nil)
-                          :in-flight?     (atom false)
-                          :dropped-count  (atom 0)
-                          :last-run       (atom nil)
-                          :last-duration  (atom nil)
-                          :total-runtime  (atom 0)
-                          :avg-duration   (atom nil)}
+    (locking lifecycle-lock
+      (when-not (reg/get-worker wname)
+        (let [worker-props {:started-at     (System/currentTimeMillis)
+                            :running?       (atom true)
+                            :next-eta       (atom nil)
+                            :num-runs       (atom 0)
+                            :num-errors     (atom 0)
+                            :last-error     (atom nil)
+                            :in-flight?     (atom false)
+                            :dropped-count  (atom 0)
+                            :last-run       (atom nil)
+                            :last-duration  (atom nil)
+                            :total-runtime  (atom 0)
+                            :avg-duration   (atom nil)}
 
-            stop-fn      (engine/start-worker! wname config worker-props)]
+              stop-fn      (engine/start-worker! wname config worker-props)]
 
-        (reg/put-worker!
-         wname
-         (assoc worker-props
-                :stop-fn    stop-fn
-                :timeout-ms timeout-ms))
+          (reg/put-worker!
+           wname
+           (assoc worker-props
+                  :stop-fn    stop-fn
+                  :timeout-ms timeout-ms))
 
-        (t/log! {:level :info :id ::start :data {:worker-name wname}})))))
+          (t/log! {:level :info :id ::start :data {:worker-name wname}}))))))
 
 (defn stop-worker!
   "Stops the named worker, interrupting in-flight task(s) if graceful shutdown times out.
    Returns true if a worker was found (and shutdown initiated), else nil."
   [worker-name]
   (let [wname (u/normalize-name worker-name)]
-    (when-let [{:keys [stop-fn]} (reg/get-worker wname)]
-      (stop-fn)
-      (reg/remove-worker! wname)
-      (t/log! {:level :info :id ::stop :data {:worker-name wname}})
-      true)))
+    (locking lifecycle-lock
+      (when-let [{:keys [stop-fn]} (reg/remove-worker! wname)]
+        (stop-fn)
+        (t/log! {:level :info :id ::stop :data {:worker-name wname}})
+        true))))
 
 (defn stop-all-workers!
   "Stops all workers. Returns a map of {worker-name -> true|nil}."
