@@ -91,6 +91,22 @@
       (is (ts/eventually #(false? @(:in-flight? props)) 500)
           "stop should release the in-flight flag"))))
 
+(deftest engine-stop-does-not-treat-closed-work-chan-as-tick
+  (ts/with-quiet-logging
+    (let [runs (atom 0)]
+      (dotimes [i 100]
+        (let [props (mock-worker-props)
+              stop! (engine/start-worker!
+                     (str "unit-stop-closed-work-" i)
+                     {:schedule   [(.. Instant now (plusMillis 10000))]
+                      :timeout-ms 1000
+                      :body-fn    (fn [] (swap! runs inc))}
+                     props)]
+          (stop!)))
+      (Thread/sleep 100)
+      (is (zero? @runs)
+          "closed work-chan reads during stop must not be treated as ticks"))))
+
 (deftest engine-drop-if-running-behavior
   (ts/with-quiet-logging
     (let [props (mock-worker-props)

@@ -50,8 +50,8 @@
    Swaps nils for ::success to prevent core.async crashes."
   ^Future [^ExecutorService executor ^Callable body-fn exec-ch]
   (letfn [(runme []
-             (let [res (try (body-fn) (catch Throwable e e))]
-               (async/put! exec-ch (if (nil? res) ::success res))))]
+            (let [res (try (body-fn) (catch Throwable e e))]
+              (async/put! exec-ch (if (nil? res) ::success res))))]
     (try
       (.submit executor ^Callable runme)
       (catch RejectedExecutionException _
@@ -140,8 +140,8 @@
 
     ;; 2. THE WORKER LOOP
     (async/go-loop []
-      (let [[_t-ms port] (async/alts! [work-chan stop-chan])]
-        (when (= port work-chan)
+      (let [[t-ms port] (async/alts! [work-chan stop-chan])]
+        (when (and (= port work-chan) (some? t-ms)) ; t-ms is nil if work-chan closed
           (reset! last-run (System/currentTimeMillis))
 
           (let [start-ms     (System/currentTimeMillis)
