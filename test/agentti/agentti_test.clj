@@ -75,6 +75,22 @@
       (is (false? @(:in-flight? props)))
       (stop!))))
 
+(deftest engine-stop-releases-in-flight
+  (ts/with-quiet-logging
+    (let [props (mock-worker-props)
+          stop! (engine/start-worker!
+                 "unit-stop-release"
+                 {:schedule   [(Instant/now)]
+                  :timeout-ms 1000
+                  :body-fn    (fn [] (Thread/sleep 200))}
+                 props)]
+      (is (ts/eventually #(true? @(:in-flight? props)) 500)
+          "worker should enter in-flight state")
+      (stop!)
+      (is (false? @(:running? props)))
+      (is (ts/eventually #(false? @(:in-flight? props)) 500)
+          "stop should release the in-flight flag"))))
+
 (deftest engine-drop-if-running-behavior
   (ts/with-quiet-logging
     (let [props (mock-worker-props)
