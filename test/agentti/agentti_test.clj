@@ -11,6 +11,8 @@
   (:import
    (java.time Instant)))
 
+(set! *warn-on-reflection* true)
+
 ;;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Test helpers / fixtures
 

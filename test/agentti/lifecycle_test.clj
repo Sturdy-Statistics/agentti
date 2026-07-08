@@ -5,6 +5,8 @@
    [agentti.registry :as reg]
    [agentti.schedule :as sched]))
 
+(set! *warn-on-reflection* true)
+
 ;; ensure tests don't leak workers across runs
 (use-fixtures :each
   (fn [f]

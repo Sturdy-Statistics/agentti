@@ -2,6 +2,8 @@
   (:require
    [taoensso.telemere :as t]))
 
+(set! *warn-on-reflection* true)
+
 (defn- remove-all-handlers! []
   (doseq [h (keys (t/get-handlers))]
     (t/remove-handler! h)))

@@ -2,6 +2,8 @@
   (:require
    [clojure.string :as string]))
 
+(set! *warn-on-reflection* true)
+
 (defn normalize-name
   "Coerce worker identifier to canonical string key."
   [x]

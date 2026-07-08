@@ -5,6 +5,8 @@
   (:import
    (java.time Instant)))
 
+(set! *warn-on-reflection* true)
+
 ;; Helper to convert Instants to longs for easy math
 (defn- ->ms ^long [^Instant inst]
   (.toEpochMilli inst))
