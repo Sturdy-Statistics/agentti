@@ -170,6 +170,16 @@ In normal operation, each worker has a dedicated executor and permits only one i
 Encountering this race with a properly configured positive timeout would require severe JVM or OS scheduling starvation—an operational condition likely to require process or host recovery independently of agentti.
 Configure timeouts with enough margin for thread startup and normal scheduling delays.
 
+### Reusing a worker name during shutdown
+
+`stop-worker!` removes the worker from the registry and initiates executor shutdown asynchronously; it does not wait for the task thread to terminate.
+If an in-flight task ignores interruption, it may continue running after `stop-worker!` returns.
+Immediately adding another worker with the same name can therefore run the replacement concurrently with the old task, and the old task is no longer represented in the dashboard.
+
+Do not use `stop-worker!` followed immediately by `add-worker!` as a worker-restart mechanism.
+Reuse a stopped worker name only when the application has independent confirmation that the previous task body exited.
+If that confirmation is unavailable for interruption-resistant work, restart the process instead.
+
 ## License
 
 Apache License 2.0
