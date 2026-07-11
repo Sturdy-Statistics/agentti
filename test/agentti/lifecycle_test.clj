@@ -111,4 +111,19 @@
     (is (thrown? clojure.lang.ExceptionInfo
                  (lc/add-worker! {:body-fn    (fn [])
                                   :schedule   (fn [] [])
-                                  :timeout-ms 100}))))) ;; Missing worker-name
+                                  :timeout-ms 100})))) ;; Missing worker-name
+
+  (testing "Requires a positive integer timeout"
+    (doseq [timeout-ms [0 -1 1.5 nil]]
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (lc/add-worker! {:worker-name :invalid-timeout
+                                    :body-fn     (fn [])
+                                    :schedule    []
+                                    :timeout-ms  timeout-ms}))
+          (str "should reject timeout-ms " (pr-str timeout-ms))))
+
+    (is (nil? (lc/add-worker! {:worker-name :minimum-timeout
+                               :body-fn     (fn [])
+                               :schedule    []
+                               :timeout-ms  1})))
+    (is (some? (reg/get-worker :minimum-timeout)))))

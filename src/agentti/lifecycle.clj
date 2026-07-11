@@ -15,7 +15,7 @@
   Required keys:
     :worker-name  (string/keyword, unique)
     :body-fn      (0-arg fn)
-    :timeout-ms   (ms)
+    :timeout-ms   (positive integer, ms)
     :schedule     (seqable absolute times: Instant, ZonedDateTime, Date, or epoch ms)
 
   No-op if a worker with same name exists.
@@ -25,7 +25,7 @@
   (when-not (and worker-name
                  (fn? body-fn)
                  (seqable? schedule)
-                 (nat-int? timeout-ms))
+                 (pos-int? timeout-ms))
     (let [safe-config (cond-> config
                         schedule (assoc :schedule "<infinite-sequence>"))]
       (throw (ex-info "Missing required worker config keys"
