@@ -38,6 +38,14 @@
   (reset! last-error (cond-> {:type err-type}
                        err-obj (assoc :error err-obj))))
 
+(defn- attempt
+  "Call `f`, returning either a value or a caught error as tagged data."
+  [f]
+  (try
+    {:value (f)}
+    (catch Throwable e
+      {:error e})))
+
 (defn- named-thread-factory [wname]
   (reify ThreadFactory
     (newThread [_ r]
@@ -88,62 +96,89 @@
    ;; these are all atoms
    {:keys [next-eta dropped-count in-flight? last-run running?] :as props}]
 
-  (let [work-chan (async/chan) ;; Unbuffered, direct handoff
-        stop-chan (async/chan)
-        executor  (new-executor worker-name)]
+  (let [work-chan        (async/chan) ;; Unbuffered, direct handoff
+        stop-chan        (async/chan)
+        executor         (new-executor worker-name)
+        shutdown-started? (atom false)
+        schedule-failed?  (atom false)
+        stop-engine!     (fn []
+                           (reset! running? false)
+                           (reset! next-eta nil)
+                           (async/close! stop-chan)
+                           (async/close! work-chan)
+                           (when (compare-and-set! shutdown-started? false true)
+                             (future (shutdown-executor executor worker-name))))
+        fail-schedule!   (fn [error]
+                           ;; Stop first so an already handed-off success cannot clear
+                           ;; the fatal schedule error after it is recorded.
+                           (reset! schedule-failed? true)
+                           (stop-engine!)
+                           (update-error-metrics! :exception error props)
+                           (t/log! {:level :error :id ::schedule-error
+                                    :msg "Schedule failed; worker stopped"
+                                    :data {:worker-name worker-name}
+                                    :error error}))]
 
     ;; 1. THE SCHEDULER LOOP
-    (async/go-loop [sq (seq schedule)]
-      (when-not sq
-        (reset! next-eta nil))
-      (when sq
-        (let [t-ms         (->epoch-milli (first sq))
-              now-ms       (System/currentTimeMillis)
-              wait-ms      (- t-ms now-ms)
-              max-sleep-ms (* 24 3600 1000)] ;; 1 day
+    (async/go-loop [sq-result (attempt #(seq schedule))]
+      (if-let [error (:error sq-result)]
+        (fail-schedule! error)
 
-          (reset! next-eta t-ms)
+        (let [sq (:value sq-result)]
+          (if-not sq
+            (reset! next-eta nil)
 
-          (cond
-            ;; CASE 1: The tick is STALE.
-            ;; Recur immediately and fast-forward to the present.
-            (< wait-ms -2000)
-            (do
-              (swap! dropped-count inc)
-              (recur (next sq)))
+            (let [time-result (attempt #(->epoch-milli (first sq)))]
+              (if-let [error (:error time-result)]
+                (fail-schedule! error)
 
-            ;; CASE 2: The wait is HUGE. Sleep for a day, then recalculate.
-            ;; Keeps thread from going to sleep forever and corrects for clock drift.
-            (< max-sleep-ms wait-ms)
-            (let [[_ port] (async/alts! [stop-chan (async/timeout max-sleep-ms)] :priority true)]
-              (if (= port stop-chan)
-                (t/log! {:level :info :id ::scheduler-stopped :data {:worker-name worker-name}})
-                (recur sq)))
+                (let [t-ms         (:value time-result)
+                      now-ms       (System/currentTimeMillis)
+                      wait-ms      (- t-ms now-ms)
+                      max-sleep-ms (* 24 3600 1000)] ;; 1 day
 
-            ;; CASE 3: We are within the final window. Sleep the exact remaining amount.
-            :else
-            (let [tick-ch  (if (pos? wait-ms)
-                             (async/timeout wait-ms)
-                             (doto (async/chan) (async/close!)))
-                  [_ port] (async/alts! [stop-chan tick-ch] :priority true)]
+                  (reset! next-eta t-ms)
 
-              (if (= port stop-chan)
-                (t/log! {:level :info :id ::scheduler-stopped :data {:worker-name worker-name}})
-                ;; CAS: Atomically acquire the lock.
-                (if (compare-and-set! in-flight? false true)
-                  ;; Lock acquired. Hand the tick directly to the worker.
-                  (let [[accepted? port] (async/alts! [stop-chan [work-chan t-ms]] :priority true)]
-                    (if (and (= port work-chan) accepted?)
-                      ;; Worker accepted the tick and will release in-flight? after processing.
-                      (recur (next sq))
-                      ;; Handoff failed or stop won; scheduler must release in-flight?.
-                      (reset! in-flight? false)))
+                  (cond
+                    ;; CASE 1: The tick is STALE.
+                    ;; Recur immediately and fast-forward to the present.
+                    (< wait-ms -2000)
+                    (do
+                      (swap! dropped-count inc)
+                      (recur (attempt #(next sq))))
 
-                  ;; Lock denied. The worker is busy.
-                  (do
-                    (swap! dropped-count inc)
-                    (t/log! {:level :warn :id ::drop :data {:worker-name worker-name}})
-                    (recur (next sq))))))))))
+                    ;; CASE 2: The wait is HUGE. Sleep for a day, then recalculate.
+                    ;; Keeps thread from going to sleep forever and corrects for clock drift.
+                    (< max-sleep-ms wait-ms)
+                    (let [[_ port] (async/alts! [stop-chan (async/timeout max-sleep-ms)] :priority true)]
+                      (if (= port stop-chan)
+                        (t/log! {:level :info :id ::scheduler-stopped :data {:worker-name worker-name}})
+                        (recur sq-result)))
+
+                    ;; CASE 3: We are within the final window. Sleep the exact remaining amount.
+                    :else
+                    (let [tick-ch  (if (pos? wait-ms)
+                                     (async/timeout wait-ms)
+                                     (doto (async/chan) (async/close!)))
+                          [_ port] (async/alts! [stop-chan tick-ch] :priority true)]
+
+                      (if (= port stop-chan)
+                        (t/log! {:level :info :id ::scheduler-stopped :data {:worker-name worker-name}})
+                        ;; CAS: Atomically acquire the lock.
+                        (if (compare-and-set! in-flight? false true)
+                          ;; Lock acquired. Hand the tick directly to the worker.
+                          (let [[accepted? port] (async/alts! [stop-chan [work-chan t-ms]] :priority true)]
+                            (if (and (= port work-chan) accepted?)
+                              ;; Worker accepted the tick and will release in-flight? after processing.
+                              (recur (attempt #(next sq)))
+                              ;; Handoff failed or stop won; scheduler must release in-flight?.
+                              (reset! in-flight? false)))
+
+                          ;; Lock denied. The worker is busy.
+                          (do
+                            (swap! dropped-count inc)
+                            (t/log! {:level :warn :id ::drop :data {:worker-name worker-name}})
+                            (recur (attempt #(next sq)))))))))))))))
 
     ;; 2. THE WORKER LOOP
     (async/go-loop []
@@ -156,7 +191,8 @@
 
             (if (= status :rejected)
               (do
-                (update-error-metrics! :rejected error props)
+                (when-not @schedule-failed?
+                  (update-error-metrics! :rejected error props))
                 (t/log! {:level :error :id ::rejected
                          :msg "Executor rejected task submission"
                          :data {:worker-name worker-name}
@@ -169,11 +205,12 @@
                 (cond
                   (= port timeout-ch)
                   (do (when task (.cancel ^Future task true))
-                      (update-error-metrics!
-                       :timeout
-                       (ex-info "Timed out; task may still be running"
-                                {:timeout-ms timeout-ms})
-                       props)
+                      (when-not @schedule-failed?
+                        (update-error-metrics!
+                         :timeout
+                         (ex-info "Timed out; task may still be running"
+                                  {:timeout-ms timeout-ms})
+                         props))
                       (t/log! {:level :warn :id ::timeout
                                :data {:worker-name worker-name
                                       :timeout-ms timeout-ms}})
@@ -187,19 +224,17 @@
                       (t/log! {:level :info :id ::interrupted :data {:worker-name worker-name}}))
 
                   (instance? Throwable result)
-                  (do (update-error-metrics! :exception result props)
+                  (do (when-not @schedule-failed?
+                        (update-error-metrics! :exception result props))
                       (t/log! {:level :error :id ::error :data {:worker-name worker-name} :error result}))
 
                   :else
-                  (update-success-metrics! start-ms props)))))
+                  (when-not @schedule-failed?
+                    (update-success-metrics! start-ms props))))))
 
           ;; Release the lock AFTER processing is complete
           (reset! in-flight? false)
           (recur))))
 
     ;; Return a tear-down function
-    (fn stop-fn []
-      (reset! running? false)
-      (async/close! stop-chan)
-      (async/close! work-chan)
-      (future (shutdown-executor executor worker-name)))))
+    stop-engine!))

@@ -61,6 +61,52 @@
       (is (false? @(:in-flight? props)) "must release in-flight flag")
       (stop!))))
 
+(deftest engine-stops-on-invalid-schedule-element
+  (ts/with-quiet-logging
+    (let [props (mock-worker-props)
+          stop! (engine/start-worker!
+                 "unit-invalid-schedule"
+                 {:schedule   ["not-a-time"]
+                  :timeout-ms 1000
+                  :body-fn    (fn [])}
+                 props)]
+      (try
+        (is (ts/eventually #(= :exception (:type @(:last-error props))) 500))
+        (is (false? @(:running? props)))
+        (is (re-find #"Unsupported time type"
+                     (some-> @(:last-error props) :error ex-message)))
+        (is (= 1 @(:num-errors props)))
+        (is (nil? @(:next-eta props)))
+        (finally
+          (stop!))))))
+
+(deftest engine-stops-when-lazy-schedule-throws
+  (ts/with-quiet-logging
+    (let [props    (mock-worker-props)
+          schedule (lazy-seq
+                    (cons (Instant/now)
+                          (lazy-seq
+                           (throw (ex-info "Schedule realization failed" {})))))
+          stop!    (engine/start-worker!
+                    "unit-throwing-schedule"
+                    {:schedule   schedule
+                     :timeout-ms 1000
+                     :body-fn    (fn [])}
+                    props)]
+      (try
+        (is (ts/eventually #(= :exception (:type @(:last-error props))) 500))
+        (is (false? @(:running? props)))
+        (is (= "Schedule realization failed"
+               (some-> @(:last-error props) :error ex-message)))
+        (is (= 1 @(:num-errors props)))
+        (is (nil? @(:next-eta props)))
+        (Thread/sleep 50)
+        (is (= "Schedule realization failed"
+               (some-> @(:last-error props) :error ex-message))
+            "a handed-off task outcome must not overwrite the fatal schedule error")
+        (finally
+          (stop!))))))
+
 (deftest engine-timeout-handling
   (ts/with-quiet-logging
     (let [props   (mock-worker-props)
