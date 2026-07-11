@@ -45,18 +45,24 @@
         (.setName (str "worker-" wname))
         (.setDaemon true))))) ;don't prevent java from exiting if thread is running
 
+(defn- new-executor [worker-name]
+  (Executors/newSingleThreadExecutor
+   (named-thread-factory worker-name)))
+
 (defn- run-task
   "runs `body-fn` in the given `executor` and puts the result on `exec-ch`.
-   Swaps nils for ::success to prevent core.async crashes."
-  ^Future [^ExecutorService executor ^Callable body-fn exec-ch]
+   Swaps nils for ::success to prevent core.async crashes. Returns a tagged
+   submission result so executor rejection can be handled immediately."
+  [^ExecutorService executor ^Callable body-fn exec-ch]
   (letfn [(runme []
             (let [res (try (body-fn) (catch Throwable e e))]
               (async/put! exec-ch (if (nil? res) ::success res))))]
     (try
-      (.submit executor ^Callable runme)
-      (catch RejectedExecutionException _
-        ;; If the executor is shutting down during a race condition, return nil
-        nil))))
+      {:status :submitted
+       :task   (.submit executor ^Callable runme)}
+      (catch RejectedExecutionException e
+        {:status :rejected
+         :error  e}))))
 
 (defn- shutdown-executor
   [^ExecutorService executor worker-name]
@@ -84,8 +90,7 @@
 
   (let [work-chan (async/chan) ;; Unbuffered, direct handoff
         stop-chan (async/chan)
-        executor  (Executors/newSingleThreadExecutor
-                   (named-thread-factory worker-name))]
+        executor  (new-executor worker-name)]
 
     ;; 1. THE SCHEDULER LOOP
     (async/go-loop [sq (seq schedule)]
@@ -144,39 +149,47 @@
         (when (and (= port work-chan) (some? t-ms)) ; t-ms is nil if work-chan closed
           (reset! last-run (System/currentTimeMillis))
 
-          (let [start-ms     (System/currentTimeMillis)
-                timeout-ch   (async/timeout timeout-ms)
-                exec-ch      (async/chan)
-                ^Future task (run-task executor body-fn exec-ch)]
+          (let [exec-ch      (async/chan)
+                {:keys [status task error]} (run-task executor body-fn exec-ch)]
 
-            #_{:clj-kondo/ignore [:redundant-let]}
-            (let [[result port] (async/alts! [stop-chan exec-ch timeout-ch] :priority true)]
-              (cond
-                (= port timeout-ch)
-                (do (when task (.cancel ^Future task true))
-                    (update-error-metrics!
-                     :timeout
-                     (ex-info "Timed out; task may still be running"
-                              {:timeout-ms timeout-ms})
-                     props)
-                    (t/log! {:level :warn :id ::timeout
-                             :data {:worker-name worker-name
-                                    :timeout-ms timeout-ms}})
-                    ;; Future.cancel requests interruption, but JVM interruption is
-                    ;; cooperative. Keep the invocation in flight until its body
-                    ;; actually exits so scheduled ticks are dropped rather than queued.
-                    (async/alts! [stop-chan exec-ch] :priority true))
+            (if (= status :rejected)
+              (do
+                (update-error-metrics! :rejected error props)
+                (t/log! {:level :error :id ::rejected
+                         :msg "Executor rejected task submission"
+                         :data {:worker-name worker-name}
+                         :error error}))
 
-                (= port stop-chan)
-                (do (when task (.cancel ^Future task true))
-                    (t/log! {:level :info :id ::interrupted :data {:worker-name worker-name}}))
+              (let [start-ms   (System/currentTimeMillis)
+                    timeout-ch (async/timeout timeout-ms)
+                    ^Future task task
+                    [result port] (async/alts! [stop-chan exec-ch timeout-ch] :priority true)]
+                (cond
+                  (= port timeout-ch)
+                  (do (when task (.cancel ^Future task true))
+                      (update-error-metrics!
+                       :timeout
+                       (ex-info "Timed out; task may still be running"
+                                {:timeout-ms timeout-ms})
+                       props)
+                      (t/log! {:level :warn :id ::timeout
+                               :data {:worker-name worker-name
+                                      :timeout-ms timeout-ms}})
+                      ;; Future.cancel requests interruption, but JVM interruption is
+                      ;; cooperative. Keep the invocation in flight until its body
+                      ;; actually exits so scheduled ticks are dropped rather than queued.
+                      (async/alts! [stop-chan exec-ch] :priority true))
 
-                (instance? Throwable result)
-                (do (update-error-metrics! :exception result props)
-                    (t/log! {:level :error :id ::error :data {:worker-name worker-name} :error result}))
+                  (= port stop-chan)
+                  (do (when task (.cancel ^Future task true))
+                      (t/log! {:level :info :id ::interrupted :data {:worker-name worker-name}}))
 
-                :else
-                (update-success-metrics! start-ms props))))
+                  (instance? Throwable result)
+                  (do (update-error-metrics! :exception result props)
+                      (t/log! {:level :error :id ::error :data {:worker-name worker-name} :error result}))
+
+                  :else
+                  (update-success-metrics! start-ms props)))))
 
           ;; Release the lock AFTER processing is complete
           (reset! in-flight? false)

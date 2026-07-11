@@ -10,7 +10,7 @@
    [taoensso.telemere :as t])
   (:import
    (java.time Instant)
-   (java.util.concurrent CountDownLatch)))
+   (java.util.concurrent CountDownLatch Executors)))
 
 (set! *warn-on-reflection* true)
 
@@ -104,6 +104,37 @@
         (finally
           (.countDown release)
           (stop!))))))
+
+(deftest engine-reports-executor-rejection
+  (let [executor (Executors/newSingleThreadExecutor)]
+    (.shutdown executor)
+    (let [{:keys [status error]}
+          (#'engine/run-task executor (fn []) nil)]
+      (is (= :rejected status))
+      (is (instance? java.util.concurrent.RejectedExecutionException error)))))
+
+(deftest engine-handles-executor-rejection-immediately
+  (ts/with-quiet-logging
+    (let [executor (Executors/newSingleThreadExecutor)
+          props    (mock-worker-props)
+          ran?     (atom false)]
+      (.shutdown executor)
+      (with-redefs-fn {#'agentti.engine/new-executor (fn [_] executor)}
+        (fn []
+          (let [stop! (engine/start-worker!
+                       "unit-rejected"
+                       {:schedule   [(Instant/now)]
+                        :timeout-ms 10000
+                        :body-fn    (fn [] (reset! ran? true))}
+                       props)]
+            (try
+              (is (ts/eventually #(= :rejected (:type @(:last-error props))) 500)
+                  "rejection should be recorded without waiting for timeout-ms")
+              (is (= 1 @(:num-errors props)))
+              (is (false? @(:in-flight? props)))
+              (is (false? @ran?))
+              (finally
+                (stop!)))))))))
 
 (deftest engine-stop-releases-in-flight
   (ts/with-quiet-logging
