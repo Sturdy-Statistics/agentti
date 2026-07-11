@@ -9,8 +9,16 @@
   [x]
   (cond
     (string? x) x
-    (keyword? x) (name x)
+    (keyword? x) (if-let [ns-name (namespace x)]
+                   (str ns-name "/" (name x))
+                   (name x))
     :else (str x)))
+
+(defn valid-worker-name?
+  "True for nonblank string or keyword worker identifiers."
+  [x]
+  (and (or (string? x) (keyword? x))
+       (not (string/blank? (normalize-name x)))))
 
 (defn format-duration
   "Format seconds as \"Dd HHh MMm SSs\" (compacts leading zeros)."

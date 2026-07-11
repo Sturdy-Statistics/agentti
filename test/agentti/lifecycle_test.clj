@@ -126,4 +126,30 @@
                                :body-fn     (fn [])
                                :schedule    []
                                :timeout-ms  1})))
-    (is (some? (reg/get-worker :minimum-timeout)))))
+    (is (some? (reg/get-worker :minimum-timeout))))
+
+  (testing "Requires a nonblank string or keyword worker name"
+    (doseq [worker-name ["" "  " (keyword "") 42]]
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (lc/add-worker! {:worker-name worker-name
+                                    :body-fn     (fn [])
+                                    :schedule    []
+                                    :timeout-ms  100}))
+          (str "should reject worker-name " (pr-str worker-name))))))
+
+(deftest namespaced-keyword-workers-remain-distinct
+  (let [config {:body-fn    (fn [])
+                :schedule   []
+                :timeout-ms 100}]
+    (lc/add-worker! (assoc config :worker-name :jobs/refresh))
+    (lc/add-worker! (assoc config :worker-name :refresh))
+
+    (is (= #{"jobs/refresh" "refresh"}
+           (set (keys (reg/registry-snapshot)))))
+    (is (some? (reg/get-worker :jobs/refresh)))
+    (is (some? (reg/get-worker :refresh)))
+    (is (not (identical? (reg/get-worker :jobs/refresh)
+                         (reg/get-worker :refresh))))
+    (is (true? (lc/stop-worker! :jobs/refresh)))
+    (is (some? (reg/get-worker :refresh)))
+    (is (true? (lc/stop-worker! :refresh)))))

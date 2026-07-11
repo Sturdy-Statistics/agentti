@@ -65,7 +65,8 @@ This behavior helps avoid synchronized “thundering herd” effects across work
 
 ## Basic usage
 
-Workers require a unique name, a positive integer timeout in milliseconds, a body function, and a seqable schedule of absolute times.
+Workers require a unique, nonblank string or keyword name; a positive integer timeout in milliseconds; a body function; and a seqable schedule of absolute times.
+Keyword namespaces are preserved, so names such as `:jobs/refresh` and `:refresh` identify distinct workers.
 Schedule items may be `java.time.Instant`, `java.time.ZonedDateTime`, `java.util.Date`, or epoch milliseconds.
 A `nil` or empty schedule is accepted and registers a dormant worker with no scheduled ticks.
 

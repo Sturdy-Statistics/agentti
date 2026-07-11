@@ -13,7 +13,7 @@
   "Register and launch a periodic worker.
 
   Required keys:
-    :worker-name  (string/keyword, unique)
+    :worker-name  (nonblank string/keyword, unique)
     :body-fn      (0-arg fn)
     :timeout-ms   (positive integer, ms)
     :schedule     (seqable absolute times: Instant, ZonedDateTime, Date, or epoch ms)
@@ -22,13 +22,13 @@
 
   Returns nil."
   [{:keys [worker-name body-fn schedule timeout-ms] :as config}]
-  (when-not (and worker-name
+  (when-not (and (u/valid-worker-name? worker-name)
                  (fn? body-fn)
                  (seqable? schedule)
                  (pos-int? timeout-ms))
     (let [safe-config (cond-> config
                         schedule (assoc :schedule "<infinite-sequence>"))]
-      (throw (ex-info "Missing required worker config keys"
+      (throw (ex-info "Missing or invalid worker config"
                       {:expected [:worker-name :body-fn :schedule :timeout-ms]
                        :config safe-config}))))
 
