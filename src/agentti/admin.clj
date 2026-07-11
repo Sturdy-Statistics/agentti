@@ -27,13 +27,14 @@
   "Human-readable summary for last error map, or nil."
   [err]
   (when err
-    (case (:type err)
-      :timeout     "Timed out"
-      :exception   (str "Exception: " (some-> ^Throwable (:error err) .getMessage))
-      :rejected    "Rejected (executor shutdown?)"
-      :cancelled   "Cancelled"
-      :interrupted "Interrupted"
-      (str "Error: " (pr-str err)))))
+    (let [msg (some-> ^Throwable (:error err) .getMessage)]
+     (case (:type err)
+       :timeout     (or msg "Timed out")
+       :exception   (str "Exception: " msg)
+       :rejected    "Rejected (executor shutdown?)"
+       :cancelled   "Canceled"
+       :interrupted "Interrupted"
+       (str "Error: " (pr-str err))))))
 
 (defn- uptime-str
   [now-ms started-at]

@@ -154,8 +154,18 @@
               (cond
                 (= port timeout-ch)
                 (do (when task (.cancel ^Future task true))
-                    (update-error-metrics! :timeout nil props)
-                    (t/log! {:level :warn :id ::timeout :data {:worker-name worker-name}}))
+                    (update-error-metrics!
+                     :timeout
+                     (ex-info "Timed out; task may still be running"
+                              {:timeout-ms timeout-ms})
+                     props)
+                    (t/log! {:level :warn :id ::timeout
+                             :data {:worker-name worker-name
+                                    :timeout-ms timeout-ms}})
+                    ;; Future.cancel requests interruption, but JVM interruption is
+                    ;; cooperative. Keep the invocation in flight until its body
+                    ;; actually exits so scheduled ticks are dropped rather than queued.
+                    (async/alts! [stop-chan exec-ch] :priority true))
 
                 (= port stop-chan)
                 (do (when task (.cancel ^Future task true))

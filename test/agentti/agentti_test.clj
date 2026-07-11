@@ -9,7 +9,8 @@
    [agentti.test-support :as ts]
    [taoensso.telemere :as t])
   (:import
-   (java.time Instant)))
+   (java.time Instant)
+   (java.util.concurrent CountDownLatch)))
 
 (set! *warn-on-reflection* true)
 
@@ -62,18 +63,47 @@
 
 (deftest engine-timeout-handling
   (ts/with-quiet-logging
-    (let [props (mock-worker-props)
-          now   (Instant/now)
-          stop! (engine/start-worker!
-                 "unit-timeout"
-                 {:schedule     [now]
-                  :timeout-ms   50
-                  :body-fn      (fn [] (Thread/sleep 200))}
-                 props)]
-      (is (ts/eventually #(= :timeout (:type @(:last-error props))) 500))
-      (is (pos? @(:num-errors props)))
-      (is (false? @(:in-flight? props)))
-      (stop!))))
+    (let [props   (mock-worker-props)
+          now     (Instant/now)
+          started (atom 0)
+          release (CountDownLatch. 1)
+          stop!   (engine/start-worker!
+                   "unit-timeout"
+                   {:schedule     [now
+                                   (.plusMillis now 100)
+                                   (.plusMillis now 300)]
+                    :timeout-ms   50
+                    :body-fn      (fn []
+                                    (when (= 1 (swap! started inc))
+                                      ;; Model uncooperative application code: cancellation
+                                      ;; interrupts await, but the body deliberately keeps going.
+                                      (loop []
+                                        (when (pos? (.getCount release))
+                                          (try
+                                            (.await release)
+                                            (catch InterruptedException _))
+                                          (recur)))))}
+                   props)]
+      (try
+        (is (ts/eventually #(= :timeout (:type @(:last-error props))) 500))
+        (is (= 1 @(:num-errors props)))
+        (is (re-find #"task may still be running"
+                     (some-> @(:last-error props) :error ex-message))
+            "the timeout state should be understandable in dashboards")
+        (is (true? @(:running? props)))
+        (is (true? @(:in-flight? props))
+            "the invocation remains in flight until its body actually exits")
+        (is (ts/eventually #(pos? @(:dropped-count props)) 500)
+            "ticks should be counted as dropped while timed-out work is still running")
+        (is (= 1 @started) "no overlapping invocation may start")
+        (.countDown release)
+        (is (ts/eventually #(false? @(:in-flight? props)) 500)
+            "the worker should self-heal when the timed-out body exits")
+        (is (ts/eventually #(= 2 @started) 1000)
+            "a later tick should run after the timed-out body exits")
+        (finally
+          (.countDown release)
+          (stop!))))))
 
 (deftest engine-stop-releases-in-flight
   (ts/with-quiet-logging

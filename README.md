@@ -7,7 +7,7 @@
 **Noun:** ([Finnish](https://translate.google.com/?sl=fi&tl=en&text=agentti&op=translate)):
 agent, operative
 
-`agentti` provides a small, explicit framework for running **periodic background tasks** inside a long-running JVM process. 
+`agentti` provides a small, explicit framework for running **periodic background tasks** inside a long-running JVM process.
 It is designed for internal services and data pipelines that need a handful of highly reliable background jobs, but do not require heavyweight infrastructure.
 
 Agentti was developed to meet the internal security and operational requirements of **Sturdy Statistics**.
@@ -27,7 +27,8 @@ Many Clojure and JVM services need *a small number of background tasks* but do n
 1. Chronology (`java.time` + `chime`): Pure generation of absolute-time sequences.
 2. Execution (`core.async` + `java.util.concurrent`): A `core.async` state machine that handles sleeping, timeouts, dropped ticks, and graceful shutdowns, with tasks run in dedicated JVM threads for cancellation.
 
-The result is a library that guarantees explicit execution semantics—tasks never overlap, hung threads are explicitly interrupted, and long-running schedules are immune to system clock drift.
+The result is a library that guarantees explicit execution semantics—tasks never overlap, timed-out threads are explicitly interrupted, and long-running schedules are immune to system clock drift.
+JVM interruption is cooperative, so a timed-out task that ignores interruption remains in flight; later ticks are dropped until it exits, after which the worker resumes normally.
 
 ## Installation
 
@@ -74,19 +75,34 @@ A `nil` or empty schedule is accepted and registers a dormant worker with no sch
 
 (agentti/add-worker!
  {:worker-name :session-pruner
-  
+
   ;; sched/periodic-seq returns a lazy schedule sequence for intervals and jitter.
   :schedule    (sched/periodic-seq 10_000 {:jitter-frac 0.1})
-  
-  ;; Hard timeout for the thread
+
+  ;; Execution timeout; on expiry the thread is interrupted. JVM interruption is
+  ;; cooperative, so later ticks are dropped until the timed-out task actually exits.
   :timeout-ms  2000
-  
+
   ;; The work to do
   :body-fn     (fn [] (println "Pruning expired sessions..."))})
 
 ;; later… (initiates a 3-second graceful shutdown, then forces interruption)
 (agentti/stop-worker! :session-pruner)
 ```
+
+## Timeouts and cooperative cancellation
+
+> [!WARNING]
+> Java thread cancellation is cooperative. When a task exceeds `:timeout-ms`, agentti records a timeout and calls `Future.cancel(true)`, which requests interruption of the executor thread—it cannot forcibly terminate the task.
+>
+> If the task ignores interruption or is blocked in non-interruptible code, it remains `:in-flight?`. Later scheduled ticks are skipped and included in the worker's `:dropped` count; they are not queued and do not run concurrently.
+> The timeout appears in `:last-error` and contributes to `:num-errors`.
+> If the task eventually returns, the worker clears `:in-flight?` and resumes on a later tick.
+> A subsequent successful run clears `:last-error`, while the cumulative error and dropped counts remain available for monitoring.
+>
+> Worker bodies should return promptly when interrupted.
+> Avoid swallowing `InterruptedException`, prefer interruptible operations, and configure timeouts on network and database calls rather than relying only on the worker timeout.
+> If work must be terminated rather than merely interrupted, isolate it in another process and enforce the deadline at the process boundary.
 
 For strict, non-drifting calendar schedules (e.g., “Midnight on the 1st of the month”), pass a standard `chime/periodic-seq`.
 
@@ -140,6 +156,18 @@ For strict, non-drifting calendar schedules (e.g., “Midnight on the 1st of the
 ```
 
 This is intended for internal admin endpoints or dashboards.
+
+## Appendix: Known issues
+
+### Cancellation before task startup
+
+There is a theoretical race if a task reaches its timeout after submission but before its dedicated executor thread begins the callable.
+Cancelling the `Future` prevents the callable from running, so it cannot report completion to the worker loop.
+The worker can consequently remain `:in-flight?`, and later ticks will continue to be dropped until the worker or process is restarted.
+
+In normal operation, each worker has a dedicated executor and permits only one in-flight task, so there should be no executor backlog.
+Encountering this race with a properly configured positive timeout would require severe JVM or OS scheduling starvation—an operational condition likely to require process or host recovery independently of agentti.
+Configure timeouts with enough margin for thread startup and normal scheduling delays.
 
 ## License
 
