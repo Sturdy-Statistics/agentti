@@ -94,6 +94,8 @@
 
     ;; 1. THE SCHEDULER LOOP
     (async/go-loop [sq (seq schedule)]
+      (when-not sq
+        (reset! next-eta nil))
       (when sq
         (let [t-ms         (->epoch-milli (first sq))
               now-ms       (System/currentTimeMillis)

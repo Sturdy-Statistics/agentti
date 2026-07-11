@@ -253,6 +253,21 @@
       (is (true? (l/stop-worker! w)))
       (is (nil? (l/stop-worker! w)) "stopping twice returns nil (not found)"))))
 
+(deftest finite-schedule-clears-next-run
+  (ts/with-quiet-logging
+    (let [w :one-shot]
+      (l/add-worker! {:worker-name w
+                      :schedule    [(Instant/now)]
+                      :timeout-ms  1000
+                      :body-fn     (fn [])})
+      (is (ts/eventually #(-> (reg/get-worker w) :num-runs deref pos?) 500))
+      (let [row (->> (a/list-workers)
+                     (filter #(= "one-shot" (:worker-name %)))
+                     first)]
+        (is (nil? (:next-run-eta row)))
+        (is (nil? (:next-run-in row))))
+      (l/stop-worker! w))))
+
 (deftest lifecycle-drop-if-running-integration
   (ts/with-quiet-logging
     (let [w :slow
